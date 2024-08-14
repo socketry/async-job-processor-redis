@@ -14,6 +14,7 @@ Please see the [project documentation](https://socketry.github.io/async-job-proc
 
 ## See Also
 
+  - [async-job](https://github.com/socketry/async-job) - Asynchronous job processing framework.
   - [async-job-adapter-active\_job](https://github.com/socketry/async-job-adapter-active_job) - ActiveJob adapter for `async-job`.
 
 ## Contributing
