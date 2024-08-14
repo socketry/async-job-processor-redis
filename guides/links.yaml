@@ -1,0 +1,4 @@
+getting-started:
+  order: 0
+redis-queue:
+  order: 1
