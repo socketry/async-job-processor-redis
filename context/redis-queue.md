@@ -17,3 +17,12 @@ The delayed queue holds jobs that are not meant to be executed immediately but a
 ## Processing Queue
 
 Once a job is dequeued from the ready queue, it enters the processing queue, signifying that it is currently being executed by a worker. The processing queue is crucial for tracking the progress of jobs and for ensuring that jobs can be retried or recovered in case of worker failure. Each worker emits a heartbeat, and if a worker fails to emit a heartbeat within a specified time, any jobs associated with that worker are automatically moved back to the ready queue for reprocessing.
+
+## Optional UI/Observability Data
+
+For operational dashboards, the server can (optionally) record failed job entries in a bounded sorted set and increment simple counters. This provides a Sidekiq‑style “morgue” without requiring a SQL database:
+
+- `<prefix>:dead` – ZSET of recent failures, newest first, each member a compact JSON; trimmed by size and (optionally) age.
+- `<prefix>:stat:processed` / `<prefix>:stat:failed` – integer counters.
+
+These features are enabled by default and configurable via the server constructor. See the Redis Queue guide for configuration and example queries.

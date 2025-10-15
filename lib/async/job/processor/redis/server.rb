@@ -29,7 +29,8 @@ module Async
 					# @parameter coder [Async::Job::Coder] The job serialization codec.
 					# @parameter resolution [Integer] The resolution in seconds for delayed job processing.
 					# @parameter parent [Async::Task] The parent task for background processing.
-					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, parent: nil)
+					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, parent: nil,
+						stats: true, dead_enabled: true, dead_max: 1000, dead_timeout: nil, failure_backtrace_limit: 10)
 						super(delegate)
 						
 						@id = SecureRandom.uuid
@@ -37,6 +38,11 @@ module Async
 						@prefix = prefix
 						@coder = coder
 						@resolution = resolution
+						@stats_enabled = !!stats
+						@dead_enabled = !!dead_enabled
+						@dead_max = dead_max
+						@dead_timeout = dead_timeout
+						@failure_backtrace_limit = failure_backtrace_limit
 						
 						@job_store = JobStore.new(@client, "#{@prefix}:jobs")
 						@delayed_jobs = DelayedJobs.new(@client, "#{@prefix}:delayed")
@@ -129,8 +135,24 @@ module Async
 							job = @coder.load(@job_store.get(id))
 							@delegate.call(job)
 							@processing_list.complete(id)
+							@processing_list.increment_processed(stats_enabled: @stats_enabled)
 						rescue => error
 							Console.error(self, "Job failed with error!", id: id, exception: error)
+							if @dead_enabled
+								begin
+									@processing_list.record_failure(
+										id,
+										job || {},
+										error,
+										dead_max: @dead_max,
+										failure_backtrace_limit: @failure_backtrace_limit,
+										dead_timeout: @dead_timeout,
+										stats_enabled: @stats_enabled
+									)
+								rescue => e
+									Console.warn(self, "Failed to record job failure!", id: id, exception: e)
+								end
+							end
 							@processing_list.retry(id)
 						end
 					ensure

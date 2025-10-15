@@ -10,7 +10,7 @@ Please see the [project documentation](https://socketry.github.io/async-job-proc
 
   - [Getting Started](https://socketry.github.io/async-job-processor-redis/guides/getting-started/index) - This guide gives you an overview of the `async-job-processor-redis` gem.
 
-  - [Redis Queue](https://socketry.github.io/async-job-processor-redis/guides/redis-queue/index) - This guide gives a brief overview of the implementation of the Redis queue.
+  - [Redis Queue](https://socketry.github.io/async-job-processor-redis/guides/redis-queue/index) - This guide gives a brief overview of the implementation of the Redis queue, including optional UI/observability keys for failure tracking.
 
 ## Releases
 
