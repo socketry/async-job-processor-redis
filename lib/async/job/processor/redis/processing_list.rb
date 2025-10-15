@@ -114,7 +114,7 @@ module Async
 						Console.warn(self, "Retrying job: #{id}")
 						@client.evalsha(@retry, 2, @pending_key, @ready_list.key, id)
 					end
-
+					
 					# Record a job failure for UI/observability purposes.
 					#
 					# Adds a compact JSON blob to the `<prefix>:dead` sorted set, scored by failure time.
@@ -146,34 +146,34 @@ module Async
 						}
 						
 						json = JSON.dump(payload)
-						@client.call('ZADD', dead_key, now, json)
+						@client.call("ZADD", dead_key, now, json)
 						
 						# Optional time-based trim:
 						if dead_timeout && dead_timeout.to_f > 0
 							cutoff = now - dead_timeout.to_f
-							@client.call('ZREMRANGEBYSCORE', dead_key, '-inf', cutoff)
+							@client.call("ZREMRANGEBYSCORE", dead_key, "-inf", cutoff)
 						end
 						
 						# Size-based trim:
-						count = @client.call('ZCARD', dead_key).to_i
+						count = @client.call("ZCARD", dead_key).to_i
 						if count > dead_max.to_i && dead_max.to_i > 0
-							@client.call('ZREMRANGEBYRANK', dead_key, 0, count - dead_max.to_i - 1)
+							@client.call("ZREMRANGEBYRANK", dead_key, 0, count - dead_max.to_i - 1)
 						end
 						
-						@client.call('INCR', failed_counter) if stats_enabled
+						@client.call("INCR", failed_counter) if stats_enabled
 					end
-
+					
 					# Increment the processed counter for successful job completions.
 					# @parameter stats_enabled [Boolean] Whether to increment the counter.
 					def increment_processed(stats_enabled: true)
 						return unless stats_enabled
-						@client.call('INCR', "#{self.prefix}:stat:processed")
+						@client.call("INCR", "#{self.prefix}:stat:processed")
 					end
-
+					
 					# Derive the base key prefix, e.g. "async-job" from a processing key like "async-job:processing".
 					# @returns [String]
 					def prefix
-						@key.sub(/:processing\z/, '')
+						@key.sub(/:processing\z/, "")
 					end
 					
 					# Update heartbeat and requeue any abandoned jobs from inactive workers.

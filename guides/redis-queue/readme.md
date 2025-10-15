@@ -30,13 +30,13 @@ You can enable and configure this when constructing the server instance:
 
 ```ruby
 server = Async::Job::Processor::Redis::Server.new(
-  delegate, client,
-  prefix: "async-job",
-  stats: true,
-  dead_enabled: true,
-  dead_max: 1000,
-  dead_timeout: nil,
-  failure_backtrace_limit: 10
+		delegate, client,
+		prefix: "async-job",
+		stats: true,
+		dead_enabled: true,
+		dead_max: 1000,
+		dead_timeout: nil,
+		failure_backtrace_limit: 10
 )
 ```
 
