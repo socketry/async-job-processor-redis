@@ -17,3 +17,36 @@ The delayed queue holds jobs that are not meant to be executed immediately but a
 ## Processing Queue
 
 Once a job is dequeued from the ready queue, it enters the processing queue, signifying that it is currently being executed by a worker. The processing queue is crucial for tracking the progress of jobs and for ensuring that jobs can be retried or recovered in case of worker failure. Each worker emits a heartbeat, and if a worker fails to emit a heartbeat within a specified time, any jobs associated with that worker are automatically moved back to the ready queue for reprocessing.
+
+## UI/Observability Keys (Optional)
+
+For dashboards and operational UIs, the server can emit minimal, bounded metadata when jobs fail and when they are processed successfully:
+
+- `async-job:dead` (ZSET) — failed jobs, newest first. Members are compact JSON with `jid`, `queue`, `class`, `args`, `error_class`, `error_message`, `error_backtrace[]`, `failed_at`.
+- `async-job:stat:processed` (STRING) — total number of successfully processed jobs.
+- `async-job:stat:failed` (STRING) — total number of failed job executions.
+
+You can enable and configure this when constructing the server instance:
+
+```ruby
+server = Async::Job::Processor::Redis::Server.new(
+  delegate, client,
+  prefix: "async-job",
+  stats: true,
+  dead_enabled: true,
+  dead_max: 1000,
+  dead_timeout: nil,
+  failure_backtrace_limit: 10
+)
+```
+
+Example queries for a UI:
+
+```bash
+ZREVRANGE async-job:dead 0 19 WITHSCORES
+GET async-job:stat:processed
+GET async-job:stat:failed
+SCAN 0 MATCH async-job:processing:* COUNT 100
+```
+
+Note: When used via the Active Job adapter, make sure the job executor re-raises exceptions so the processor can observe failures.

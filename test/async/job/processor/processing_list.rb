@@ -12,6 +12,7 @@ require "sus/fixtures/console"
 require "async/job/processor/redis/processing_list"
 require "async/job/processor/redis/ready_list"
 require "async/job/processor/redis/job_store"
+require "json"
 
 describe Async::Job::Processor::Redis::ProcessingList do
 	include Sus::Fixtures::Async::ReactorContext
@@ -95,7 +96,7 @@ describe Async::Job::Processor::Redis::ProcessingList do
 		end
 	end
 	
-	with "#requeue" do
+  with "#requeue" do
 		it "can set heartbeat and requeue abandoned jobs" do
 			# Set up abandoned jobs to test requeue functionality
 			dead_server_id = "dead-server-#{SecureRandom.hex(4)}"
@@ -135,8 +136,56 @@ describe Async::Job::Processor::Redis::ProcessingList do
 			
 			# Should return 0 when no jobs are requeued
 			expect(count).to be == 0
-		end
-	end
+  end
+
+  with "observability helpers" do
+    it "records failures into <prefix>:dead and trims to dead_max; increments counters" do
+      # Unique namespace per test
+      obs_prefix = "obs-#{SecureRandom.hex(6)}"
+      list = subject.new(client, "#{obs_prefix}:processing", server_id, ready_list, job_store)
+      error = begin
+        raise "boom"
+      rescue => e
+        e
+      end
+
+      # Record first failure
+      list.record_failure("jid-1", {"queue_name"=>"default","job_class"=>"Demo","arguments"=>[1]}, error, dead_max: 2, failure_backtrace_limit: 3, stats_enabled: true)
+
+      dead_key = "#{obs_prefix}:dead"
+      stat_failed = "#{obs_prefix}:stat:failed"
+
+      count1 = client.call('ZCARD', dead_key).to_i
+      expect(count1).to be == 1
+      entry = client.call('ZREVRANGE', dead_key, 0, 0)&.first
+      data = JSON.parse(entry)
+      expect(data).to have_keys(
+        'jid' => be == 'jid-1',
+        'error_class' => be == 'RuntimeError',
+        'error_message' => be(:include?, 'boom')
+      )
+
+      # Failed counter increments
+      failed_count = (client.call('GET', stat_failed) || '0').to_i
+      expect(failed_count).to be >= 1
+
+      # Add two more failures; dead_max=2 so only 2 most recent remain
+      list.record_failure("jid-2", {"queue_name"=>"default"}, error, dead_max: 2, failure_backtrace_limit: 3, stats_enabled: true)
+      list.record_failure("jid-3", {"queue_name"=>"default"}, error, dead_max: 2, failure_backtrace_limit: 3, stats_enabled: true)
+
+      count2 = client.call('ZCARD', dead_key).to_i
+      expect(count2).to be == 2
+    end
+
+    it "increments processed counter" do
+      obs_prefix = "obs-#{SecureRandom.hex(6)}"
+      list = subject.new(client, "#{obs_prefix}:processing", server_id, ready_list, job_store)
+      list.increment_processed(stats_enabled: true)
+      val = (client.call('GET', "#{obs_prefix}:stat:processed") || '0').to_i
+      expect(val).to be == 1
+    end
+  end
+end
 	
 	with "#start" do
 		it "can requeue an abandoned job" do

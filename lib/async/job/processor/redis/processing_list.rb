@@ -3,6 +3,8 @@
 # Released under the MIT License.
 # Copyright, 2024-2025, by Samuel Williams.
 
+require "json"
+
 module Async
 	module Job
 		module Processor
@@ -111,6 +113,67 @@ module Async
 					def retry(id)
 						Console.warn(self, "Retrying job: #{id}")
 						@client.evalsha(@retry, 2, @pending_key, @ready_list.key, id)
+					end
+
+					# Record a job failure for UI/observability purposes.
+					#
+					# Adds a compact JSON blob to the `<prefix>:dead` sorted set, scored by failure time.
+					# Optionally enforces a maximum size and time-based trimming.
+					# Also increments `<prefix>:stat:failed` if enabled.
+					#
+					# @parameter id [String] The job ID that failed.
+					# @parameter job [Hash] The deserialized job payload.
+					# @parameter error [Exception] The exception that was raised.
+					# @parameter dead_max [Integer] Maximum number of failure entries to retain.
+					# @parameter failure_backtrace_limit [Integer] Maximum number of backtrace lines to retain.
+					# @parameter dead_timeout [Numeric | nil] If set, remove entries older than this many seconds.
+					# @parameter stats_enabled [Boolean] Whether to increment the failed counter.
+					def record_failure(id, job, error, dead_max: 1000, failure_backtrace_limit: 10, dead_timeout: nil, stats_enabled: true)
+						now = Time.now.to_f
+						prefix = self.prefix
+						dead_key = "#{prefix}:dead"
+						failed_counter = "#{prefix}:stat:failed"
+						
+						payload = {
+							"jid" => id,
+							"queue" => job["queue_name"],
+							"class" => job["job_class"],
+							"args" => job["arguments"],
+							"error_class" => error.class.name,
+							"error_message" => error.message.to_s[0, 1024],
+							"error_backtrace" => Array(error.backtrace).first(failure_backtrace_limit),
+							"failed_at" => now
+						}
+						
+						json = JSON.dump(payload)
+						@client.call('ZADD', dead_key, now, json)
+						
+						# Optional time-based trim:
+						if dead_timeout && dead_timeout.to_f > 0
+							cutoff = now - dead_timeout.to_f
+							@client.call('ZREMRANGEBYSCORE', dead_key, '-inf', cutoff)
+						end
+						
+						# Size-based trim:
+						count = @client.call('ZCARD', dead_key).to_i
+						if count > dead_max.to_i && dead_max.to_i > 0
+							@client.call('ZREMRANGEBYRANK', dead_key, 0, count - dead_max.to_i - 1)
+						end
+						
+						@client.call('INCR', failed_counter) if stats_enabled
+					end
+
+					# Increment the processed counter for successful job completions.
+					# @parameter stats_enabled [Boolean] Whether to increment the counter.
+					def increment_processed(stats_enabled: true)
+						return unless stats_enabled
+						@client.call('INCR', "#{self.prefix}:stat:processed")
+					end
+
+					# Derive the base key prefix, e.g. "async-job" from a processing key like "async-job:processing".
+					# @returns [String]
+					def prefix
+						@key.sub(/:processing\z/, '')
 					end
 					
 					# Update heartbeat and requeue any abandoned jobs from inactive workers.

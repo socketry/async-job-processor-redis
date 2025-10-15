@@ -50,8 +50,8 @@ describe Async::Job::Processor::Redis do
 		end
 	end
 	
-	with "a failed job" do
-		it "can retry a job" do
+  with "a failed job" do
+    it "can retry a job" do
 			server.call(job)
 			failed = false
 			
@@ -71,9 +71,53 @@ describe Async::Job::Processor::Redis do
 				"data" => be == job["data"],
 			)
 			
-			expect(failed).to be == true
-		end
-	end
+      expect(failed).to be == true
+    end
+
+    it "records failure in <prefix>:dead and increments counters" do
+      # Enqueue a job which fails once, then succeeds (same as previous test):
+      server.call(job)
+      failed = false
+
+      mock(buffer) do |mock|
+        mock.before(:call) do |job|
+          unless failed
+            failed = true
+            raise "test error for observability"
+          end
+        end
+      end
+
+      # Consume the retried job so the loop progresses:
+      buffer.pop
+
+      # Give a moment for failure recording to be written:
+      sleep 0.05
+
+      client = Async::Redis::Client.new
+      dead_key = "#{prefix}:dead"
+      stat_failed = "#{prefix}:stat:failed"
+      stat_processed = "#{prefix}:stat:processed"
+
+      # Dead set should have at least one entry:
+      count = client.call('ZCARD', dead_key).to_i
+      expect(count).to be > 0
+
+      # Latest entry should include error_class and error_message:
+      entry = client.call('ZREVRANGE', dead_key, 0, 0)&.first
+      data = JSON.parse(entry)
+      expect(data).to have_keys(
+        'error_class' => be == 'RuntimeError',
+        'error_message' => be(:include?, 'test error for observability')
+      )
+
+      # Failed counter should be >= 1, processed >= 1 (after retry succeeds):
+      failed_count = (client.call('GET', stat_failed) || '0').to_i
+      processed_count = (client.call('GET', stat_processed) || '0').to_i
+      expect(failed_count).to be >= 1
+      expect(processed_count).to be >= 1
+    end
+  end
 	
 	with "#status_string" do
 		it "returns a string with the current job counts" do
