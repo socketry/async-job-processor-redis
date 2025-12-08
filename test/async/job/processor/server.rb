@@ -5,6 +5,7 @@
 
 require "async"
 require "async/redis"
+require "async/semaphore"
 
 require "sus/fixtures/async/reactor_context"
 require "sus/fixtures/console"
@@ -80,8 +81,70 @@ describe Async::Job::Processor::Redis do
 			expect(server.status_string).to be == "R=0 D=0 P=0/0"
 			
 			server.call(job)
+			sleep 0.1 # Allow some time for the job to be processed.
 			
 			expect(server.status_string).to be == "R=0 D=0 P=0/1"
+		end
+	end
+	
+	with "concurrency limit" do
+		# Delegate that sleeps for 5 seconds to simulate slow job processing
+		let(:slow_delegate) do
+			Class.new do
+				def start
+				end
+				
+				def stop
+				end
+				
+				def call(job)
+					sleep 5
+				end
+			end.new
+		end
+		
+		with "Async::Idler" do
+			let(:idler_server) {subject.new(slow_delegate, prefix:, resolution: 1)}
+			
+			it "can process all jobs concurrently" do
+				idler_server.start
+				
+				# Enqueue 10 jobs
+				10.times do |i|
+					idler_server.call({"data" => "job #{i}"})
+				end
+				
+				# Give time for all jobs to be picked up
+				sleep 0.5
+				
+				# With Async::Idler (unlimited concurrency), all 10 jobs should be in processing status
+				status = idler_server.status_string
+				expect(status).to be =~ /P=(10|[5-9])\//
+				
+				idler_server.stop
+			end
+		end
+		
+		with "Async::Semaphore" do
+			let(:semaphore_server) {subject.new(slow_delegate, prefix:, resolution: 1, parent: Async::Semaphore.new(2))}
+			
+			it "can limit concurrent job processing to 2" do
+				semaphore_server.start
+				
+				# Enqueue 10 jobs
+				10.times do |i|
+					semaphore_server.call({"data" => "job #{i}"})
+				end
+				
+				# Give time for jobs to be picked up
+				sleep 0.5
+				
+				# Only 2 jobs should be in processing status
+				status = semaphore_server.status_string
+				expect(status).to be =~ /P=2\//
+				
+				semaphore_server.stop
+			end
 		end
 	end
 end
