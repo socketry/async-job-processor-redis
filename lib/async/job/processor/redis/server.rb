@@ -53,11 +53,13 @@ module Async
 						
 						@task = true
 						
-						@parent.async(transient: true, annotation: self.class.name) do |task|
+						Async do |task|
 							@task = task
 							
 							while true
-								self.dequeue(task)
+								@parent.async(transient: true, annotation: self.class.name) do
+									self.dequeue
+								end
 							end
 						ensure
 							@task = nil
@@ -120,19 +122,17 @@ module Async
 					# If the job fails for any reason, it will be retried.
 					#
 					# If you do not desire this behavior, you should catch exceptions in the delegate.
-					def dequeue(parent)
+					def dequeue
 						_id = @processing_list.fetch
 						
-						parent.async do
-							id = _id; _id = nil
-							
-							job = @coder.load(@job_store.get(id))
-							@delegate.call(job)
-							@processing_list.complete(id)
-						rescue => error
-							Console.error(self, "Job failed with error!", id: id, exception: error)
-							@processing_list.retry(id)
-						end
+						id = _id; _id = nil
+						
+						job = @coder.load(@job_store.get(id))
+						@delegate.call(job)
+						@processing_list.complete(id)
+					rescue => error
+						Console.error(self, "Job failed with error!", id: id, exception: error)
+						@processing_list.retry(id)
 					ensure
 						@processing_list.retry(_id) if _id
 					end
