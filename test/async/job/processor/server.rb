@@ -80,6 +80,12 @@ describe Async::Job::Processor::Redis do
 			expect(server.status_string).to be == "R=0 D=0 P=0/0"
 			
 			server.call(job)
+			buffer.pop
+			
+			deadline = Time.now + 0.5
+			while server.status_string != "R=0 D=0 P=0/1" && Time.now < deadline
+				sleep(0.01)
+			end
 			
 			expect(server.status_string).to be == "R=0 D=0 P=0/1"
 		end

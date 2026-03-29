@@ -3,6 +3,8 @@
 # Released under the MIT License.
 # Copyright, 2024-2025, by Samuel Williams.
 
+require "kernel/sync"
+
 module Async
 	module Job
 		module Processor
@@ -75,6 +77,10 @@ module Async
 						@complete = @client.script(:load, COMPLETE)
 						
 						@complete_count = 0
+						@task = nil
+						@mutex = Mutex.new
+						@condition = ConditionVariable.new
+						@stop_requested = false
 					end
 					
 					# @attribute [String] The base Redis key for this processing list.
@@ -129,26 +135,83 @@ module Async
 						return count
 					end
 					
-					# Start the background heartbeat and abandoned job recovery task.
+					# Start the background heartbeat and abandoned job recovery thread.
 					# @parameter delay [Integer] The heartbeat update interval in seconds.
 					# @parameter factor [Integer] The heartbeat expiration factor.
-					# @parameter parent [Async::Task] The parent task to run the background loop in.
-					# @returns [Async::Task] The background processing task.
-					def start(delay: 5, factor: 2, parent: Async::Task.current)
-						start_time = Time.now.to_f
-						
-						parent.async do |task|
-							while true
-								task.defer_stop do
-									count = self.requeue(start_time, delay, factor)
-									
-									if count > 0
-										Console.warn(self, "Requeued #{count} abandoned jobs.")
-									end
-								end
+					# @returns [Thread | false] The background processing thread, or `false` if already started.
+					def start(delay: 5, factor: 2)
+						@mutex.synchronize do
+							return false if @task
+							
+							@stop_requested = false
+							@task = Thread.new do
+								Thread.current.report_on_exception = false
+								Thread.current.name = "#{self.class.name}:#{@id}" if Thread.current.respond_to?(:name=)
 								
-								sleep(delay)
+								run_heartbeat_loop(delay: delay, factor: factor)
+							rescue => error
+								Console.error(self, "Heartbeat loop failed!", exception: error)
+								raise
+							ensure
+								@mutex.synchronize do
+									@task = nil if @task.equal?(Thread.current)
+								end
 							end
+						end
+					end
+					
+					# Stop the background heartbeat and abandoned job recovery thread.
+					def stop
+						task = @mutex.synchronize do
+							@stop_requested = true
+							@condition.broadcast
+							
+							@task
+						end
+						
+						task&.join unless task == Thread.current
+					end
+					
+					private
+					
+					def run_heartbeat_loop(delay:, factor:)
+						start_time = Time.now.to_f
+						client = Async::Redis::Client.new(@client.endpoint)
+						requeue = Sync do
+							client.script(:load, REQUEUE)
+						end
+						
+						loop do
+							count = Sync do
+								requeue_with(client, requeue, start_time, delay, factor)
+							end
+							
+							if count > 0
+								Console.warn(self, "Requeued #{count} abandoned jobs.")
+							end
+							
+							break if wait_for_stop(delay)
+						end
+					ensure
+						Sync do
+							client&.close
+						end
+					end
+					
+					def requeue_with(client, requeue, start_time, delay, factor)
+						uptime = (Time.now.to_f - start_time).round(2)
+						expiry = (delay*factor).ceil
+						client.set(@heartbeat_key, JSON.dump(uptime: uptime), seconds: expiry)
+						client.evalsha(requeue, 2, @key, @ready_list.key)
+					end
+					
+					def wait_for_stop(delay)
+						@mutex.synchronize do
+							return true if @stop_requested
+							
+							@condition.wait(@mutex, delay)
+							
+							@stop_requested
 						end
 					end
 				end

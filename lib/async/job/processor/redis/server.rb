@@ -28,8 +28,10 @@ module Async
 					# @parameter prefix [String] The Redis key prefix for job data.
 					# @parameter coder [Async::Job::Coder] The job serialization codec.
 					# @parameter resolution [Integer] The resolution in seconds for delayed job processing.
+					# @parameter heartbeat_interval [Integer] The interval in seconds between processing heartbeats.
+					# @parameter heartbeat_factor [Integer] The factor used to calculate heartbeat expiry.
 					# @parameter parent [Async::Task] The parent task for background processing.
-					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, parent: nil)
+					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, heartbeat_interval: 5, heartbeat_factor: 2, parent: nil)
 						super(delegate)
 						
 						@id = SecureRandom.uuid
@@ -37,6 +39,8 @@ module Async
 						@prefix = prefix
 						@coder = coder
 						@resolution = resolution
+						@heartbeat_interval = heartbeat_interval
+						@heartbeat_factor = heartbeat_factor
 						
 						@job_store = JobStore.new(@client, "#{@prefix}:jobs")
 						@delayed_jobs = DelayedJobs.new(@client, "#{@prefix}:delayed")
@@ -73,7 +77,7 @@ module Async
 						@delayed_jobs.start(@ready_list, resolution: @resolution)
 						
 						# Start the processing processor, which will move jobs to the ready processor when they are abandoned:
-						@processing_list.start
+						@processing_list.start(delay: @heartbeat_interval, factor: @heartbeat_factor)
 						
 						self.start!
 					end
@@ -81,6 +85,7 @@ module Async
 					# Stop the server and all background processing tasks.
 					def stop
 						@task&.stop
+						@processing_list.stop
 						
 						super
 					end
