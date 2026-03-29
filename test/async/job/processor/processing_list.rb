@@ -150,11 +150,12 @@ describe Async::Job::Processor::Redis::ProcessingList do
 			client.del("#{prefix}:processing:#{dead_server_id}")
 			
 			task = processing_list.start(delay: 0.1, factor: 2)
+			expect(task).to be_a(Thread)
 			
 			fetched_job = processing_list.fetch
 			expect(fetched_job).to be == abandoned_job_id
 		ensure
-			task&.stop
+			processing_list.stop
 		end
 	end
 end
