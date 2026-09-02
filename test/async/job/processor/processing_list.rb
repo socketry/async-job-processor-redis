@@ -51,6 +51,16 @@ describe Async::Job::Processor::Redis::ProcessingList do
 				pending_job = client.lpop(pending_key)
 				expect(pending_job).to be == job_id
 			end
+			
+			it "raises an error if the blocking dequeue returns no job" do
+				mock(client) do |mock|
+					mock.replace(:brpoplpush) {nil}
+				end
+				
+				expect do
+					processing_list.fetch
+				end.to raise_exception(IOError, message: be(:include?, "Blocking dequeue returned no job"))
+			end
 		end
 		
 		with "#complete" do

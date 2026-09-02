@@ -83,5 +83,77 @@ describe Async::Job::Processor::Redis do
 			
 			expect(server.status_string).to be == "R=0 D=0 P=0/1"
 		end
+		
+		it "formats large counts" do
+			expect(server.send(:format_count, 1_234)).to be == "1.23K"
+			expect(server.send(:format_count, 1_234_567)).to be == "1.23M"
+		end
+	end
+end
+
+describe Async::Job::Processor::Redis::Server do
+	include Sus::Fixtures::Console::CapturedLogger
+	
+	let(:client) do
+		Object.new.tap do |client|
+			def client.script(...)
+				"script"
+			end
+		end
+	end
+	
+	let(:server) {subject.new(nil, client, retry_delay: 1.0, retry_delay_limit: 4.0)}
+	
+	with "#run" do
+		it "retries dequeue failures with bounded exponential backoff" do
+			attempts = 0
+			delays = []
+			
+			mock(server) do |mock|
+				mock.replace(:dequeue) do |_parent|
+					attempts += 1
+					
+					throw :finished if attempts > 4
+					raise IOError, "Redis connection failed!"
+				end
+				
+				mock.replace(:rand) {1.0}
+				mock.replace(:sleep) {|delay| delays << delay}
+			end
+			
+			catch(:finished) do
+				server.send(:run, nil)
+			end
+			
+			expect(delays).to be == [1.0, 2.0, 4.0, 4.0]
+			expect_console.to have_logged(severity: be(:==, :error), message: be(:include?, "Failed to dequeue job"))
+		end
+		
+		it "resets the retry delay after a successful dequeue" do
+			attempts = 0
+			delays = []
+			
+			mock(server) do |mock|
+				mock.replace(:dequeue) do |_parent|
+					attempts += 1
+					
+					case attempts
+					when 1, 3
+						raise IOError, "Redis connection failed!"
+					when 4
+						throw :finished
+					end
+				end
+				
+				mock.replace(:rand) {1.0}
+				mock.replace(:sleep) {|delay| delays << delay}
+			end
+			
+			catch(:finished) do
+				server.send(:run, nil)
+			end
+			
+			expect(delays).to be == [1.0, 1.0]
+		end
 	end
 end
