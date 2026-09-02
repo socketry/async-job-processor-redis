@@ -28,8 +28,10 @@ module Async
 					# @parameter prefix [String] The Redis key prefix for job data.
 					# @parameter coder [Async::Job::Coder] The job serialization codec.
 					# @parameter resolution [Integer] The resolution in seconds for delayed job processing.
+					# @parameter retry_delay [Numeric] The initial delay before retrying a failed dequeue operation.
+					# @parameter retry_delay_limit [Numeric] The maximum delay between failed dequeue operations.
 					# @parameter parent [Async::Task] The parent task for background processing.
-					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, parent: nil)
+					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, retry_delay: 1, retry_delay_limit: 30, parent: nil)
 						super(delegate)
 						
 						@id = SecureRandom.uuid
@@ -37,6 +39,8 @@ module Async
 						@prefix = prefix
 						@coder = coder
 						@resolution = resolution
+						@retry_delay = retry_delay
+						@retry_delay_limit = retry_delay_limit
 						
 						@job_store = JobStore.new(@client, "#{@prefix}:jobs")
 						@delayed_jobs = DelayedJobs.new(@client, "#{@prefix}:delayed")
@@ -56,9 +60,7 @@ module Async
 						@parent.async(transient: true, annotation: self.class.name) do |task|
 							@task = task
 							
-							while true
-								self.dequeue(task)
-							end
+							self.run(task)
 						ensure
 							@task = nil
 						end
@@ -113,7 +115,27 @@ module Async
 						end
 					end
 					
-					protected
+				protected
+					
+					# Run the dequeue loop, retrying transient failures with bounded exponential backoff.
+					# @parameter parent [Async::Task] The parent task used to process dequeued jobs.
+					def run(parent)
+						retry_delay = @retry_delay
+						
+						while true
+							begin
+								self.dequeue(parent)
+								retry_delay = @retry_delay
+							rescue => error
+								delay = retry_delay * (0.5 + rand * 0.5)
+								
+								Console.error(self, "Failed to dequeue job; retrying.", retry_in: delay, exception: error)
+								sleep(delay)
+								
+								retry_delay = [retry_delay * 2, @retry_delay_limit].min
+							end
+						end
+					end
 					
 					# Dequeue a job from the ready list and process it.
 					#

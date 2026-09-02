@@ -93,9 +93,10 @@ module Async
 					
 					# Fetch the next job from the ready queue, moving it to this worker's pending list.
 					# This is a blocking operation that waits until a job is available.
-					# @returns [String, nil] The job ID, or nil if no job is available.
+					# @returns [String] The job ID.
+					# @raises [IOError] If the blocking operation returns without a job.
 					def fetch
-						@client.brpoplpush(@ready_list.key, @pending_key, 0)
+						@client.brpoplpush(@ready_list.key, @pending_key, 0) or raise IOError, "Blocking dequeue returned no job!"
 					end
 					
 					# Mark a job as completed, removing it from the pending list and job store.
