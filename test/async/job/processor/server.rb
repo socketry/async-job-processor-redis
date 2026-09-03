@@ -84,4 +84,31 @@ describe Async::Job::Processor::Redis do
 			expect(server.status_string).to be == "R=0 D=0 P=0/1"
 		end
 	end
+	
+	with "#stop" do
+		it "stops every server-owned task" do
+			dispatcher_task = server.instance_variable_get(:@task)
+			processing_list = server.instance_variable_get(:@processing_list)
+			processing_task = processing_list.instance_variable_get(:@task)
+			delayed_jobs = server.instance_variable_get(:@delayed_jobs)
+			delayed_task = delayed_jobs.instance_variable_get(:@task)
+			
+			server.stop
+			
+			expect(dispatcher_task.finished?).to be == true
+			expect(processing_task.finished?).to be == true
+			expect(delayed_task.finished?).to be == true
+			
+			# Shutdown remains safe when both the owner and its parent call it.
+			server.stop
+		end
+		
+		it "can restart after stopping all server-owned tasks" do
+			server.stop
+			server.start
+			server.call(job)
+			
+			expect(buffer.pop).to be == job
+		end
+	end
 end

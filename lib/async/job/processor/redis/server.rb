@@ -80,7 +80,11 @@ module Async
 					
 					# Stop the server and all background processing tasks.
 					def stop
+						# Stop workers before their heartbeat protection. Pending jobs remain in Redis
+						# and become recoverable when this server's heartbeat expires naturally.
 						@task&.stop
+						@processing_list.stop
+						@delayed_jobs.stop
 						
 						super
 					end

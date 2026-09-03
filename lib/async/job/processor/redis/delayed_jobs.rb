@@ -34,6 +34,7 @@ module Async
 						
 						@add = @client.script(:load, ADD)
 						@move = @client.script(:load, MOVE)
+						@task = nil
 					end
 					
 					# @returns [Integer] The number of jobs currently in the delayed queue.
@@ -45,9 +46,16 @@ module Async
 					# @parameter ready_list [ReadyList] The ready list to move jobs to.
 					# @parameter resolution [Integer] The check interval in seconds.
 					# @parameter parent [Async::Task] The parent task to run the background loop in.
-					# @returns [Async::Task] The background processing task.
+					# @returns [Async::Task | false] The background processing task, or false if already started.
 					def start(ready_list, resolution: 10, parent: Async::Task.current)
-						parent.async do
+						return false if @task
+						
+						# Reserve ownership before spawning because Async tasks may begin eagerly.
+						@task = true
+						
+						task = parent.async do |task|
+							@task = task
+							
 							while true
 								count = move(destination: ready_list.key)
 								
@@ -57,7 +65,26 @@ module Async
 								
 								sleep(resolution)
 							end
+						ensure
+							@task = nil if @task.equal?(task)
 						end
+						
+						# A non-greedy parent may return before the child assigns its handle.
+						@task = task if @task == true
+						return task
+					rescue
+						@task = nil
+						raise
+					end
+					
+					# Stop the owned delayed job promotion task.
+					def stop
+						task = @task
+						@task = nil
+						return unless task.respond_to?(:stop)
+						
+						task.stop
+						task.wait if task.alive?
 					end
 					
 					# @attribute [String] The Redis key for this delayed jobs queue.

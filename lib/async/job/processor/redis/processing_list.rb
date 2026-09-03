@@ -75,6 +75,7 @@ module Async
 						@complete = @client.script(:load, COMPLETE)
 						
 						@complete_count = 0
+						@task = nil
 					end
 					
 					# @attribute [String] The base Redis key for this processing list.
@@ -133,11 +134,17 @@ module Async
 					# @parameter delay [Integer] The heartbeat update interval in seconds.
 					# @parameter factor [Integer] The heartbeat expiration factor.
 					# @parameter parent [Async::Task] The parent task to run the background loop in.
-					# @returns [Async::Task] The background processing task.
+					# @returns [Async::Task | false] The background processing task, or false if already started.
 					def start(delay: 5, factor: 2, parent: Async::Task.current)
+						return false if @task
+						
+						# Reserve ownership before spawning because Async tasks may begin eagerly.
+						@task = true
 						start_time = Time.now.to_f
 						
-						parent.async do |task|
+						task = parent.async do |task|
+							@task = task
+							
 							while true
 								task.defer_stop do
 									count = self.requeue(start_time, delay, factor)
@@ -149,7 +156,26 @@ module Async
 								
 								sleep(delay)
 							end
+						ensure
+							@task = nil if @task.equal?(task)
 						end
+						
+						# A non-greedy parent may return before the child assigns its handle.
+						@task = task if @task == true
+						return task
+					rescue
+						@task = nil
+						raise
+					end
+					
+					# Stop the owned heartbeat and abandoned job recovery task.
+					def stop
+						task = @task
+						@task = nil
+						return unless task.respond_to?(:stop)
+						
+						task.stop
+						task.wait if task.alive?
 					end
 				end
 			end

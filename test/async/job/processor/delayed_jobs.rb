@@ -125,7 +125,7 @@ describe Async::Job::Processor::Redis::DelayedJobs do
 			remaining_score = client.zscore(delayed_jobs.key, job_id)
 			expect(remaining_score).to be_nil
 		ensure
-			task&.stop
+			delayed_jobs.stop
 		end
 		
 		it "logs debug messages when moving jobs" do
@@ -147,6 +147,23 @@ describe Async::Job::Processor::Redis::DelayedJobs do
 				severity: be == :debug,
 				message: be(:include?, "Moved 1 delayed jobs to ready list")
 			)
+		ensure
+			delayed_jobs.stop
+		end
+		
+		it "owns a single background task" do
+			task = delayed_jobs.start(ready_list, resolution: 1)
+			
+			expect(task.alive?).to be == true
+			expect(delayed_jobs.start(ready_list, resolution: 1)).to be == false
+			
+			delayed_jobs.stop
+			expect(task.finished?).to be == true
+			
+			restarted_task = delayed_jobs.start(ready_list, resolution: 1)
+			expect(restarted_task).not.to be == false
+		ensure
+			delayed_jobs.stop
 		end
 	end
 end
