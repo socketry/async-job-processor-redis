@@ -39,3 +39,22 @@ Async do
 	server.stop
 end
 ```
+
+## Bounded processing
+
+Pass `Async::Semaphore` as the parent to bound blocking Redis fetches and job
+processing together:
+
+``` ruby
+require "async/semaphore"
+
+queue = Async::Job::Builder.build(buffer) do
+	dequeue Async::Job::Processor::Redis,
+		parent: Async::Semaphore.new(20)
+end
+```
+
+Omit `parent`, or pass an `Async::Task`, to retain the compatibility behavior:
+one blocking fetch stays in flight while fetched jobs run as children of the
+dispatcher. A Redis fetch failure stops that dispatcher so it cannot recover
+independently of the processing heartbeat.

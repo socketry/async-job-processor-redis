@@ -17,3 +17,19 @@ The delayed queue holds jobs that are not meant to be executed immediately but a
 ## Processing Queue
 
 Once a job is dequeued from the ready queue, it enters the processing queue, signifying that it is currently being executed by a worker. The processing queue is crucial for tracking the progress of jobs and for ensuring that jobs can be retried or recovered in case of worker failure. Each worker emits a heartbeat, and if a worker fails to emit a heartbeat within a specified time, any jobs associated with that worker are automatically moved back to the ready queue for reprocessing.
+
+## Processing concurrency
+
+Without a semaphore `parent`, the server keeps one blocking Redis fetch in
+flight and runs each fetched job as a child of the dispatcher. Passing an
+`Async::Task` as `parent` preserves this behavior and places the dispatcher
+under that task.
+
+Pass `Async::Semaphore` as `parent` to set an explicit bound. The dispatcher
+reserves a semaphore slot before the blocking fetch and holds it through
+processing, so blocked fetches and executing jobs share the same limit.
+
+A failed blocking fetch terminates the dispatcher instead of retrying in
+process, so dequeuing cannot recover independently of the processing heartbeat.
+Stopping the server cancels in-flight workers and releases their semaphore
+slots.

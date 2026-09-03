@@ -6,6 +6,7 @@
 require "async/idler"
 require "async/job/coder"
 require "async/job/processor/generic"
+require "async/semaphore"
 
 require "securerandom"
 
@@ -28,7 +29,7 @@ module Async
 					# @parameter prefix [String] The Redis key prefix for job data.
 					# @parameter coder [Async::Job::Coder] The job serialization codec.
 					# @parameter resolution [Integer] The resolution in seconds for delayed job processing.
-					# @parameter parent [Async::Task] The parent task for background processing.
+					# @parameter parent [Async::Task | Async::Semaphore | Nil] An optional lifecycle parent or concurrency limiter for job processing.
 					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, parent: nil)
 						super(delegate)
 						
@@ -43,7 +44,11 @@ module Async
 						@ready_list = ReadyList.new(@client, "#{@prefix}:ready")
 						@processing_list = ProcessingList.new(@client, "#{@prefix}:processing", @id, @ready_list, @job_store)
 						
+						# Ordinary task parents preserve the original single blocking fetch loop.
 						@parent = parent || Async::Idler.new
+						# A semaphore limits both claimed and executing jobs, while the dispatcher
+						# task remains responsible for worker lifecycle.
+						@semaphore = parent if parent.is_a?(Async::Semaphore)
 					end
 					
 					# Start the job processing loop immediately.
@@ -53,14 +58,17 @@ module Async
 						
 						@task = true
 						
-						@parent.async(transient: true, annotation: self.class.name) do |task|
+						start_dispatcher do |task|
 							@task = task
 							
 							while true
-								self.dequeue(task)
+								self.dequeue(task, @semaphore)
 							end
+						rescue
+							dispatcher_failed = true
+							raise
 						ensure
-							@task = nil
+							@task = nil unless dispatcher_failed && task.children?
 						end
 					end
 					
@@ -73,7 +81,7 @@ module Async
 						@delayed_jobs.start(@ready_list, resolution: @resolution)
 						
 						# Start the processing processor, which will move jobs to the ready processor when they are abandoned:
-						@processing_list.start
+						@processing_task = @processing_list.start
 						
 						self.start!
 					end
@@ -81,6 +89,7 @@ module Async
 					# Stop the server and all background processing tasks.
 					def stop
 						@task&.stop
+						@task = nil
 						
 						super
 					end
@@ -120,24 +129,58 @@ module Async
 					# If the job fails for any reason, it will be retried.
 					#
 					# If you do not desire this behavior, you should catch exceptions in the delegate.
-					def dequeue(parent)
-						_id = @processing_list.fetch
+					def dequeue(parent = nil, semaphore = nil)
+						self.ensure_processing_task_alive!
 						
-						parent.async do
-							id = _id; _id = nil
-							
-							job = @coder.load(@job_store.get(id))
-							@delegate.call(job)
-							@processing_list.complete(id)
-						rescue => error
-							Console.error(self, "Job failed with error!", id: id, exception: error)
-							@processing_list.retry(id)
+						if semaphore
+							semaphore.acquire
+							semaphore_acquired = true
+							self.ensure_processing_task_alive!
 						end
+						
+						_id = @processing_list.fetch
+						self.ensure_processing_task_alive!
+						
+						id = _id
+						if parent
+							parent.async {self.process(id, semaphore)}
+						else
+							self.process(id, semaphore)
+						end
+						semaphore_acquired = false
+						_id = nil
 					ensure
+						semaphore.release if semaphore_acquired
 						@processing_list.retry(_id) if _id
 					end
 					
+					def process(id, semaphore = nil)
+						job = @coder.load(@job_store.get(id))
+						@delegate.call(job)
+						@processing_list.complete(id)
+					rescue => error
+						Console.error(self, "Job failed with error!", id: id, exception: error)
+						@processing_list.retry(id)
+					ensure
+						semaphore&.release
+					end
+					
 					private
+					
+					def start_dispatcher(&block)
+						if @semaphore
+							# Keep semaphore permits available for claimed jobs, not the dispatcher.
+							Async(transient: true, annotation: self.class.name, &block)
+						else
+							@parent.async(transient: true, annotation: self.class.name, &block)
+						end
+					end
+					
+					def ensure_processing_task_alive!
+						if @processing_task && !@processing_task.alive?
+							raise "Heartbeat task stopped; refusing to dequeue jobs."
+						end
+					end
 					
 					def format_count(value)
 						if value > 1_000_000
