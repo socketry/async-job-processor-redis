@@ -28,8 +28,9 @@ module Async
 					# @parameter prefix [String] The Redis key prefix for job data.
 					# @parameter coder [Async::Job::Coder] The job serialization codec.
 					# @parameter resolution [Integer] The resolution in seconds for delayed job processing.
+					# @parameter delayed_jobs_instrumentation [Interface(:call) | Nil] An optional callback for delayed promoter events.
 					# @parameter parent [Async::Task] The parent task for background processing.
-					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, parent: nil)
+					def initialize(delegate, client, prefix: "async-job", coder: Coder::DEFAULT, resolution: 10, delayed_jobs_instrumentation: nil, parent: nil)
 						super(delegate)
 						
 						@id = SecureRandom.uuid
@@ -37,6 +38,7 @@ module Async
 						@prefix = prefix
 						@coder = coder
 						@resolution = resolution
+						@delayed_jobs_instrumentation = delayed_jobs_instrumentation
 						
 						@job_store = JobStore.new(@client, "#{@prefix}:jobs")
 						@delayed_jobs = DelayedJobs.new(@client, "#{@prefix}:delayed")
@@ -70,7 +72,11 @@ module Async
 						super
 						
 						# Start the delayed processor, which will move jobs to the ready processor when they are ready:
-						@delayed_jobs.start(@ready_list, resolution: @resolution)
+						@delayed_jobs.start(
+							@ready_list,
+							resolution: @resolution,
+							instrumentation: @delayed_jobs_instrumentation,
+						)
 						
 						# Start the processing processor, which will move jobs to the ready processor when they are abandoned:
 						@processing_list.start
