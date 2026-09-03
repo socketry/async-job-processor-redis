@@ -154,7 +154,22 @@ describe Async::Job::Processor::Redis::ProcessingList do
 			fetched_job = processing_list.fetch
 			expect(fetched_job).to be == abandoned_job_id
 		ensure
-			task&.stop
+			processing_list.stop
+		end
+		
+		it "owns a single background task" do
+			task = processing_list.start(delay: 1)
+			
+			expect(task.alive?).to be == true
+			expect(processing_list.start(delay: 1)).to be == false
+			
+			processing_list.stop
+			expect(task.finished?).to be == true
+			
+			restarted_task = processing_list.start(delay: 1)
+			expect(restarted_task).not.to be == false
+		ensure
+			processing_list.stop
 		end
 	end
 end
