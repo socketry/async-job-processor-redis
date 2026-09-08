@@ -11,15 +11,19 @@ module Async
 				# Jobs are stored with their execution timestamps and automatically moved
 				# to the ready queue when their scheduled time arrives.
 				class DelayedJobs
+					# Redis caps Lua's `unpack` at 8000 arguments, and does not roll back a
+					# script that raises partway through, so an unbounded move loses jobs.
+					LIMIT = 1000
+					
 					ADD = <<~LUA
 						redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
 						redis.call('ZADD', KEYS[2], ARGV[3], ARGV[1])
 					LUA
 					
 					MOVE = <<~LUA
-						local jobs = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
-						redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+						local jobs = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1], 'LIMIT', 0, ARGV[2])
 						if #jobs > 0 then
+							redis.call('ZREM', KEYS[1], unpack(jobs))
 							redis.call('LPUSH', KEYS[2], unpack(jobs))
 						end
 						return #jobs
@@ -28,9 +32,11 @@ module Async
 					# Initialize a new delayed jobs manager.
 					# @parameter client [Async::Redis::Client] The Redis client instance.
 					# @parameter key [String] The Redis key for the delayed jobs sorted set.
-					def initialize(client, key)
+					# @parameter limit [Integer] The maximum number of jobs moved per {move} call.
+					def initialize(client, key, limit: LIMIT)
 						@client = client
 						@key = key
+						@limit = limit
 						
 						@add = @client.script(:load, ADD)
 						@move = @client.script(:load, MOVE)
@@ -49,7 +55,7 @@ module Async
 					def start(ready_list, resolution: 10, parent: Async::Task.current)
 						parent.async do
 							while true
-								count = move(destination: ready_list.key)
+								count = drain(destination: ready_list.key)
 								
 								if count > 0
 									Console.debug(self, "Moved #{count} delayed jobs to ready list.")
@@ -79,9 +85,25 @@ module Async
 					# Move jobs that are ready to be processed from the delayed queue to the destination.
 					# @parameter destination [String] The Redis key of the destination queue.
 					# @parameter now [Integer] The current timestamp to check against.
+					# @parameter limit [Integer] The maximum number of jobs to move.
 					# @returns [Integer] The number of jobs moved.
-					def move(destination:, now: Time.now.to_f)
-						@client.evalsha(@move, 2, @key, destination, now)
+					def move(destination:, now: Time.now.to_f, limit: @limit)
+						@client.evalsha(@move, 2, @key, destination, now, limit)
+					end
+					
+					# Repeatedly {move} until no more jobs are due.
+					# @parameter destination [String] The Redis key of the destination queue.
+					# @parameter now [Integer] The current timestamp to check against.
+					# @returns [Integer] The total number of jobs moved.
+					def drain(destination:, now: Time.now.to_f)
+						total = 0
+						
+						while (count = move(destination: destination, now: now)) > 0
+							total += count
+							break if count < @limit
+						end
+						
+						return total
 					end
 				end
 			end
