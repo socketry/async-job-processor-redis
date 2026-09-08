@@ -25,6 +25,14 @@ describe Async::Job::Processor::Redis::DelayedJobs do
 	
 	let(:test_job) {JSON.dump({"data" => "test delayed job"})}
 	
+	# Seeds the sorted set directly; thousands of #add round trips would dominate.
+	def add_delayed(count, timestamp)
+		count.times.each_slice(500) do |slice|
+			arguments = slice.flat_map {|index| [timestamp.to_f, "job-#{index}"]}
+			client.call("ZADD", delayed_jobs.key, *arguments)
+		end
+	end
+	
 	with "#add" do
 		it "can add a job with a timestamp" do
 			future_time = Time.now + 60  # 1 minute from now
@@ -106,6 +114,41 @@ describe Async::Job::Processor::Redis::DelayedJobs do
 			expect(ready_jobs).to be(:include?, job_id_1)
 			expect(ready_jobs).to be(:include?, job_id_2)
 			expect(ready_jobs).to be(:include?, job_id_3)
+		end
+	end
+	
+	with "#move" do
+		it "limits how many jobs are moved by a single call" do
+			past_time = Time.now - 60
+			
+			add_delayed(10, past_time)
+			
+			expect(delayed_jobs.move(destination: ready_list.key, limit: 4)).to be == 4
+			expect(client.zcard(delayed_jobs.key)).to be == 6
+			expect(client.llen(ready_list.key)).to be == 4
+		end
+	end
+	
+	with "#drain" do
+		it "moves every due job across successive batches" do
+			past_time = Time.now - 60
+			
+			add_delayed(10, past_time)
+			
+			expect(delayed_jobs.drain(destination: ready_list.key)).to be == 10
+			expect(client.zcard(delayed_jobs.key)).to be == 0
+			expect(client.llen(ready_list.key)).to be == 10
+		end
+		
+		it "does not lose jobs when more than the Lua unpack limit are due" do
+			past_time = Time.now - 60
+			count = 8500
+			
+			add_delayed(count, past_time)
+			
+			expect(delayed_jobs.drain(destination: ready_list.key)).to be == count
+			expect(client.zcard(delayed_jobs.key)).to be == 0
+			expect(client.llen(ready_list.key)).to be == count
 		end
 	end
 	
